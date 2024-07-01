@@ -8,28 +8,18 @@ import shutil
 import ffmpeg
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from rich.console import Console
+from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
+import asyncio
+console = Console()
 
-max_worker = 8
-gpu_devices = itertools.cycle([0])
+max_worker = 6
+max_retries = 10
+gpu_devices = itertools.cycle([0, 1])
 
 def progressbar(label, total):
     pbar = tqdm(total=total, desc=label, unit='B', unit_scale=True, unit_divisor=1024)
     return pbar
-
-def divide_crop(input_path, output_dir, options = None):
-    print("Input source: ", input_path)
-    if options is None:
-        print("No options")
-    else:
-        print("Options: ", options)
-
-    if options == 1:
-        divide_2x2(input_path, output_dir)
-    # elif options == 2:
-    #     divide_3x3(input_path, output_dir)
-    # elif options == 3:
-    #     divide_4x4(input_path, output_dir)
-
 
 def get_video_info(input_path):
     command = [
@@ -79,169 +69,39 @@ def process_bar(process):
                    continue  # 다음 라인으로 넘어갑니다.
     pbar.close()
 
-
-def divide_2x2(input_path, output_dir):
-    print("divide 2x2")
-    result = get_video_info(input_path)
-    duration = result['format']['duration']
-    width = result['streams'][0]['width']
-    height = result['streams'][0]['height']
-    print("Duration: ", duration)
-    print("Width: ", width)
-    print("Height: ", height)
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    input_video = ffmpeg.input(input_path)
-    crop_width, crop_height = width // 2, height // 2
-
-    # # 2x2 크롭 영역 정의
-    # # 각 영역별 크롭 및 출력 설정
-    top_left = input_video.crop(x=0, y=0, width=crop_width, height=crop_height)
-    top_right = input_video.crop(x=crop_width, y=0, width=crop_width, height=crop_height)
-    bottom_left = input_video.crop(x=0, y=crop_height, width=crop_width, height=crop_height)
-    bottom_right = input_video.crop(x=crop_width, y=crop_height, width=crop_width, height=crop_height)
-    #
-    # process = ffmpeg.run([
-    #     ffmpeg.output(top_left, f'{output_dir}/top_left.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(top_right, f'{output_dir}/top_right.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(bottom_left, f'{output_dir}/bottom_left.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    #     ffmpeg.output(bottom_right, f'{output_dir}/bottom_right.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, **{'progress': '-'} ),
-    # ], capture_stdout=True, capture_stderr=True, overwrite_output=True)
-
-    # #crop 1/2
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, 0, 0)
-    #     .output(output_dir + '/1.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='-', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, width // 2, 0)
-    #     .output(output_dir + '/2.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, 0, height // 2)
-    #     .output(output_dir + '/3.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-    # (
-    #     ffmpeg
-    #     .input(input_path)
-    #     .filter('crop', width // 2, height // 2, width // 2, height // 2)
-    #     .output(output_dir + '/4.mp4', **{'c:v': 'h264_nvenc'}, **{'c:a': 'copy'}, **{'map': '0:a'}, progress='pipe:1', y='-y')
-    #     .run()
-    # )
-
-
-def divide_2x2_with_progress(input_path, output_dir):
-    print("divide 2x2")
-    result = get_video_info(input_path)
-    duration = result['format']['duration']
-    width = result['streams'][0]['width']
-    height = result['streams'][0]['height']
-    print("Duration: ", duration)
-    print("Width: ", width)
-    print("Height: ", height)
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    crop_width, crop_height = width // 2, height // 2
-
-    cmd = [
-        'ffmpeg',
-        '-i', input_path,
-        '-filter_complex',
-        f'[0:v]crop={crop_width}:{crop_height}:0:0[1]; '
-        f'[0:v]crop={crop_width}:{crop_height}:iw/2:0[2]; '
-        f'[0:v]crop={crop_width}:{crop_height}:0:ih/2[3]; '
-        f'[0:v]crop={crop_width}:{crop_height}:iw/2:ih/2[4]',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[1]', f'{output_dir}/1.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[2]', f'{output_dir}/2.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[3]', f'{output_dir}/3.mp4',
-
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        "-map", "0:a",
-        '-map', '[4]', f'{output_dir}/4.mp4',
-
-        '-progress', '-',
-        '-y'
-    ]
-
-    # ffmpeg 프로세스 시작
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    process_bar(process)
-
-def merge_tile_2x2(tile_path, output_path):
-    split_tiles = ([4,3],
-                   [2,1])
-
+def process_encoding(input_path, output_path):
+    print("pre-encoding")
     command = [
         'ffmpeg',
-    ]
-
-    for row in split_tiles:
-        for title in row:
-            title_path = f"{tile_path}/{title}.mp4"
-            print(f"Title Path: {title_path}")
-            command.extend(['-i', title_path])
-
-    # input1(0, 0) | input3(w0, 0)
-    # input2(0, h0) | input4(w0, h0)
-    # https://ffmpeg.org/ffmpeg-filters.html#xstack-1
-    #pprint.pprint(command)
-    filter_complex_str = "xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0[v];"
-
-    command.extend([
-        '-filter_complex', filter_complex_str,
-        '-progress', '-',
-        '-map', '[v]',
-        '-map', '0:a?',
-        '-c:v', 'h264_nvenc',
-        '-c:a', 'copy',
-        '-b:v', '8000k',
-        '-strict', 'experimental',  # 일부 ffmpeg 버전에서 aac 오디오 코덱을 사용할 때 필요
+        '-i', input_path,
+        '-filter_complex', '[0:a]aresample=async=1:first_pts=0[a]',
+        '-map', '0:v',
+        '-map', '[a]',
+        '-c:v', 'copy',
+        '-c:a', 'pcm_s16le',
+        '-strict', 'experimental',
         '-y',
         output_path
-    ])
-
-    pprint.pprint(command)
+    ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
 
-def reverse_video(input_path, output_dir, temp_dir, reversed_dir, audio_reversed_dir, output_name):
+def reverse_video(pre_processing ,input_path, output_dir, temp_dir, reversed_dir, audio_reversed_dir, output_name):
     print("reverse video")
     # input_path = f"{output_dir}/merged.mp4"
     # output_path = f"{output_dir}/reversed.mp4"
     segment_duration = 10
 
+    if os.path.exists(pre_processing):
+        shutil.rmtree(pre_processing)
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
     if os.path.exists(reversed_dir):
         shutil.rmtree(reversed_dir)
     if os.path.exists(audio_reversed_dir):
         shutil.rmtree(audio_reversed_dir)
+    if not os.path.exists(pre_processing):
+        os.makedirs(pre_processing)
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     if not os.path.exists(temp_dir):
@@ -251,11 +111,13 @@ def reverse_video(input_path, output_dir, temp_dir, reversed_dir, audio_reversed
     if not os.path.exists(audio_reversed_dir):
         os.makedirs(audio_reversed_dir)
 
-    split_video(input_path, segment_duration, temp_dir)
-    reverse_segment(temp_dir, reversed_dir)
+    process_encoding(input_path=input_path, output_path=f"{pre_processing}/encoded.mov")
+    split_video(input_path=f'{pre_processing}/encoded.mov', segment_duration=segment_duration, temp_dir=temp_dir)
+    asyncio.run(reverse_segment(temp_dir, reverse_dir))
     #reverse_audio(input_path, temp_dir, audio_reversed_dir)
-    concatenate_segments(reversed_dir=reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
-    #combine_audio_video(video_path=f"{temp_dir}/reversed.mp4", audio_path=f'{temp_dir}/reversed_audio.mp4', output_path=f'{output_dir}/{output_name}.mp4')
+    #concatenate_segments(reversed_dir=reversed_dir, output_path=f'{output_dir}/{output_name}.mp4')
+    concatenate_segments(reversed_dir=reversed_dir, output_path = f"{temp_dir}/reversed.mov")
+    #combine_audio_video(video_path=f"{temp_dir}/reversed.mov", audio_path=f'{temp_dir}/reversed_audio.mov', output_path=f'{output_dir}/{output_name}.mp4')
 
 def split_video(input_path, segment_duration, temp_dir):
     print("split video")
@@ -265,145 +127,178 @@ def split_video(input_path, segment_duration, temp_dir):
     command = [
         'ffmpeg',
         '-i', input_path,
-        '-map', '0:v',
-        '-map', '0:a',
+        '-c', 'copy',
+        #'-c:v', 'h264_nvenc',
+        # '-c:a', 'pcm_s16le',
+        # '-map', '0:v',
+        # '-map', '0:a',
+        '-map', '0',
         '-start_at_zero',
         '-segment_time', str(segment_duration),
         '-f', 'segment',
-        '-break_non_keyframes', '0',
-        '-reset_timestamps', '1',
+        '-segment_format', 'mov',
         '-avoid_negative_ts', 'make_zero',
-        '-force_key_frames', f"expr:gte(t,n_forced*{segment_duration})",  # 강제 키프레임 설정
-        '-c', 'copy',
-        f'{temp_dir}/segment%010d.ts',
+        '-break_non_keyframes', '0',
+        #'-reset_timestamps', '1',
+        #'-write_empty_segments', '1',
+        '-copyts',  # 타임스탬프 복사
+        #'-force_key_frames', f"expr:gte(t,n_forced*{segment_duration})",  # 강제 키프레임 설정
+        f'{temp_dir}/segment%010d.mov',
         '-y'
     ]
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
     process_bar(process)
 
-def reverse_segment(temp_dir, reversed_dir):
-    """분할된 모든 비디오 세그먼트를 역순으로 만듭니다."""
+async def worker(name, queue, progress, task_id):
+    while True:
+        segment_file, temp_dir, reversed_dir, gpu_device = await queue.get()
+        try:
+            await retry_process_segment(
+                os.path.join(temp_dir, segment_file),
+                os.path.join(reversed_dir, segment_file),
+                gpu_device
+            )
+            progress.update(task_id, advance=1)
+            completed_count = progress.tasks[task_id].completed  # 완료된 작업 수 가져오기
+            total_count = progress.tasks[task_id].total  # 전체 작업 수 가져오기
+            print(f"{name} 작업 완료: {segment_file} | 할당 GPU: {gpu_device} | 완료된 작업 수: {completed_count}|{total_count}")
+        except Exception as e:
+            print(f"{segment_file} 처리 중 오류 발생 (GPU {gpu_device}): {e}")
+        finally:
+            queue.task_done()
+
+async def retry_process_segment(input_path, output_path, gpu_device):
+    for attempt in range(1, max_retries + 1):
+        try:
+            await process_segment(input_path, output_path, gpu_device)
+            return
+        except Exception as e:
+            if attempt < max_retries:
+                print(f"오류 발생, 재시도 중 ({attempt}/{max_retries}): {input_path}")
+                await asyncio.sleep(2)  # 재시도 전 대기 시간
+            else:
+                print(f"최대 재시도 횟수 초과: {input_path}")
+                raise
+
+
+async def reverse_segment(temp_dir, reversed_dir):
     if not os.path.exists(reversed_dir):
         os.makedirs(reversed_dir)
-
 
     segment_files = sorted(os.listdir(temp_dir))
     total_segments = len(segment_files)
 
-    with ThreadPoolExecutor(max_workers=max_worker) as executor:
-        future_to_segment = {
-            executor.submit(
-                process_segment,
-                os.path.join(temp_dir, seg_file),
-                os.path.join(reversed_dir, seg_file),
-                next(gpu_devices)
-            ): seg_file
-            for seg_file in segment_files
-        }
+    queue = asyncio.Queue(maxsize=1)
+    workers = []
 
-        count = 0
-        for i, future in enumerate(as_completed(future_to_segment), 1):
-            segment = future_to_segment[future]
-            gpu_device = next(gpu_devices)  # 현재 작업에 할당된 GPU 번호를 가져옴
-            try:
-                future.result()
-                count += 1
-                print(f"작업 완료: {segment} | 남은 작업 수: {total_segments - i} | 완료된 작업 수: {count} | 총 작업 수: {total_segments} | 할당 GPU: {gpu_device}")
-            except subprocess.CalledProcessError as exc:
-                print(f"{segment} 처리 중 ffmpeg 에러 발생 (GPU {gpu_device}): {exc}")
-            except Exception as exc:
-                print(f"{segment} 처리 중 알 수 없는 에러 발생 (GPU {gpu_device}): {exc}")
+    # Rich Progress 설정
+    progress = Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}% [{task.completed}/{task.total}]"),
+        TimeElapsedColumn(),  # 소요 시간 표시 추가
+        TimeRemainingColumn()  # 남은 시간 표시 추가
+    )
 
-    # for segment_file in sorted(os.listdir(temp_dir)):
-    #     print(f"remaining segment: {segment_file} | {len(os.listdir(temp_dir))})")
-    #     input_path = os.path.join(temp_dir, segment_file)
-    #     command = [
-    #         'ffmpeg',
-    #         '-i', input_path,
-    #         '-vf', 'reverse',
-    #         '-af', 'areverse',
-    #         '-c:v', 'h264_nvenc',
-    #         '-b:v', '8000k',
-    #         f'{reversed_dir}/{segment_file}',
-    #         '-y'
-    #     ]
+    with progress:
+        task_id = progress.add_task("Processing", total=total_segments)
 
-    #
-    #     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    #     process_bar(process)
+        for i in range(max_worker):
+            worker_task = asyncio.create_task(worker(f"Worker-{i + 1}", queue, progress, task_id))
+            workers.append(worker_task)
 
-def process_segment(input_path, output_path, gpu_deivce):
+        for segment_file in segment_files:
+            gpu_device = next(gpu_devices)
+            await queue.put((segment_file, temp_dir, reversed_dir, gpu_device))
+
+        await queue.join()
+
+        for worker_task in workers:
+            worker_task.cancel()
+
+        await asyncio.gather(*workers, return_exceptions=True)
+
+async def process_segment(input_path, output_path, gpu_device):
     """하나의 비디오 세그먼트를 역순으로 만듭니다."""
+
+    #Nvidia GPU를 사용하여 비디오 세그먼트를 역순으로 만듭니다.
     command = [
         'ffmpeg',
         '-hwaccel', 'cuda',
-        '-hwaccel_device', f'{gpu_deivce}',
+        '-fflags', '+genpts',
+        #'-hwaccel_output_format', 'cuda',
+        #'-c:v', 'h264_cuvid',
+        '-hwaccel_device', f'{gpu_device}',
         '-i', input_path,
-        '-map', '0:v',
-        '-map', '0:a',
+        #'-map', '0:v',
+        #'-map', '0:a',
         '-start_at_zero',
-        '-vf', 'reverse,setpts=PTS-STARTPTS',  # 비디오 프레임 역순 및 타임스탬프 조정
-        '-af', 'areverse,asetpts=PTS-STARTPTS',  # 오디오 프레임 역순 및 타임스탬프 조정
         '-c:v', 'h264_nvenc',
+        #'-vf', 'hwdownload,format=nv12,reverse,setpts=PTS-STARTPTS, hwupload=extra_hw_frames=64',  # 비디오 프레임 역순 및 타임스탬프 조정
+        #'-vf', 'hwdownload,format=nv12,reverse, hwupload=extra_hw_frames=64',  # 비디오 프레임 역순 및 타임스탬프 조정
+        '-vf', 'reverse, setpts=PTS-STARTPTS',
+        '-af', 'areverse,aresample=async=1:min_hard_comp=0.100000:first_pts=0',  # 오디오 프레임 역순 및 타임스탬프 조정
+        '-c:a', 'pcm_s16le',
+        #'-af', 'areverse, asetpts=PTS-STARTPTS, atrim=start=0',  # 오디오 프레임 역순 및 타임스탬프 조정
         #'-gpu', f'{gpu_deivce}',
-        '-c:a', 'aac',
+        #'-channel_layout', 'stereo',
         '-avoid_negative_ts', 'make_zero',
-        # '-vsync', '0',
-        # '-an',
-        '-async', '1',
+        '-format', 'mov',
+        #'-an',
+        '-r', '60',
+        '-copyts',  # 타임스탬프 복사
         '-b:v', '8000k',
         output_path,
         '-y'
     ]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    # process_bar(process)
-    output, errors = process.communicate()  # 프로세스 완료 대기
-    if process.returncode != 0:
-        pprint.pprint(f"에러 발생 (첫 시도): {output} | {errors}")
-        pprint.pprint(f"gpu 재처리: {input_path} -> {output_path}")
 
-        # 에러 발생 시 재시도
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        output, errors = process.communicate()  # 프로세스 완료 대기
-        if process.returncode != 0:
-            raise Exception(f"에러 발생 종료 (재시도 후): {output} | {errors}")
+
+    process = await asyncio.create_subprocess_exec(*command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    stdout, stderr = await process.communicate()
+
+    if process.returncode != 0:
+        raise Exception(f"Error during processing: {stdout} | {stderr}")
 
 
 def reverse_audio(input_path, temp_dir, audio_reversed_dir):
     print("reverse audio")
-    if not os.path.exists(audio_reversed_dir):
-        os.makedirs(audio_reversed_dir)
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-    if not os.path.exists(f"{temp_dir}/audio"):
-        os.makedirs(f"{temp_dir}/audio")
 
-    temp_dir_audio = f"{temp_dir}/audio"
-    segment_duration = 10
-    split_audio(input_path, segment_duration, temp_dir_audio)
-    reverse_segment_audio_process(temp_dir_audio, audio_reversed_dir)
-    concat_segments_audio(audio_reversed_dir, temp_dir)
+    command = [
+        'ffmpeg',
+        '-i', input_path,
+        '-start_at_zero',
+        '-threads', '0',
+        # '-map', '0:a',
+        '-vn',
+        '-progress', '-',  # 진행률 표시
+        #'-af', 'areverse',  # 오디오 프레임 역순
+        '-af', 'areverse, asetpts=PTS-STARTPTS, atrim=start=0',  # 오디오 프레임 역순 및 타임스탬프 조정
+        '-c:a', 'pcm_s16le',
+        '-avoid_negative_ts', 'make_zero',
+        '-copyts',  # 타임스탬프 복사
+        f'{temp_dir}/reversed_audio.mov',
+        '-y'
+    ]
 
-    # command = [
-    #     'ffmpeg',
-    #     '-hwaccel', 'cuda',
-    #     '-i', input_path,
-    #     '-start_at_zero',
-    #     '-threads', '0',
-    #     '-map', '0:a',
-    #     '-vn',
-    #     '-progress', '-',  # 진행률 표시
-    #     '-af', 'areverse',
-    #     '-c:a', 'aac',
-    #     '-channel_layout', 'stereo',
-    #     f'{temp_dir}/reversed_audio.mp4',
-    #     '-y'
-    # ]
-    #
-    # process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-    # process_bar(process)
-    # print("reverse audio Done")
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
+    process_bar(process)
+    print("reverse audio Done")
+
+# def reverse_audio(input_path, temp_dir, audio_reversed_dir):
+#     print("reverse audio")
+#     if not os.path.exists(audio_reversed_dir):
+#         os.makedirs(audio_reversed_dir)
+#     if not os.path.exists(temp_dir):
+#         os.makedirs(temp_dir)
+#     if not os.path.exists(f"{temp_dir}/audio"):
+#         os.makedirs(f"{temp_dir}/audio")
+#
+#     temp_dir_audio = f"{temp_dir}/audio"
+#     segment_duration = 10
+#     split_audio(input_path, segment_duration, temp_dir_audio)
+#     reverse_segment_audio_process(temp_dir_audio, audio_reversed_dir)
+#     concat_segments_audio(audio_reversed_dir, temp_dir)
 
 def split_audio(input_path, segment_duration, temp_dir):
 
@@ -488,7 +383,6 @@ def concat_segments_audio(reversed_dir, output_path):
     print("concatenate segments audio Done")
     os.remove('audio_segments.txt')
 
-
 def concatenate_segments(reversed_dir, output_path):
     print("concatenate segments")
     with open('segments.txt', 'w') as f:
@@ -501,7 +395,7 @@ def concatenate_segments(reversed_dir, output_path):
         '-f', 'concat',
         '-safe', '0',
         '-i', 'segments.txt',
-        '-fflags', '+genpts',  # PTS 재생성
+        '-fflags', '+genpts',
         '-c', 'copy',
         '-threads', '0',
         f'{output_path}',
@@ -531,7 +425,7 @@ def combine_audio_video(video_path, audio_path, output_path):
     process_bar(process)
     print("combine audio video Done")
 
-def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
+def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir, audio_reversed_dir):
     for root, dirs, files in os.walk(dir_path):
         for i, file in enumerate(files):
             if file.endswith(('.mp4', '.ts')):
@@ -540,11 +434,12 @@ def run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir):
                 print(f"Processing remaining: {len(files)} : {len(files) - (i + 1)} |  {file}")
                 # divide_2x2_with_progress(input_path, divide_tmp)
                 # merge_tile_2x2(divide_tmp, f"{merge_tmp}/merged.mp4")
-                reverse_video(input_path, output_dir, temp_dir, reverse_dir, file)
+                reverse_video(input_path, output_dir, temp_dir, reverse_dir, audio_reversed_dir, file)
 
 
 if __name__ == '__main__':
-    input_path = '102845970 20230930 044644 001 ts.mp4'
+    input_path = 'reversed.mov'
+    pre_processing = './output/pre_processing'
     temp_dir = './output/temp'
     divide_tmp = './output/divide_tmp'
     merge_tmp = './output/merge_tmp'
@@ -553,11 +448,11 @@ if __name__ == '__main__':
     dir_path = './test_dir'
     output_dir = './output'
 
-    # run(dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir)
+    #run(pre_processing, dir_path, output_dir, divide_tmp, merge_tmp, temp_dir, reverse_dir, audio_reversed_dir)
 
     # divide_2x2_with_progress(input_path, output_dir)
     # merge_tile_2x2(output_dir, f"{output_dir}/merged.mp4")
-    reverse_video(input_path, output_dir, temp_dir, reverse_dir, audio_reversed_dir, 'reversed_done')
+    reverse_video(pre_processing, input_path, output_dir, temp_dir, reverse_dir, audio_reversed_dir, 'reversed_done')
     #reverse_audio(input_path, temp_dir, audio_reversed_dir)
     #concat_segments(filelist_path= f'{output_dir}/filelist.txt', output_path=f'{output_dir}/final_reversed.mp4')
     #concatenate_segments(reverse_dir, output_path = f"{output_dir}/reversed.mp4")
